@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/v2fly/v2ray-core/v5/common/bytespool"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
 const (
@@ -21,6 +22,7 @@ type Buffer struct {
 	start     int32
 	end       int32
 	unmanaged bool
+	Endpoint  *net.Destination
 }
 
 // New creates a Buffer with 0 length and 2K capacity.
@@ -57,6 +59,7 @@ func (b *Buffer) Release() {
 	b.v = nil
 	b.Clear()
 	pool.Put(p) // nolint: staticcheck
+	b.Endpoint = nil
 }
 
 // Clear clears the content of the buffer, results an empty buffer with
@@ -222,6 +225,38 @@ func (b *Buffer) Read(data []byte) (int, error) {
 // ReadFrom implements io.ReaderFrom.
 func (b *Buffer) ReadFrom(reader io.Reader) (int64, error) {
 	n, err := reader.Read(b.v[b.end:])
+	b.end += int32(n)
+	return int64(n), err
+}
+
+func (b *Buffer) ReadFromPacketConn(reader net.PacketConn) (int64, error) {
+	n, addr, err := reader.ReadFrom(b.v[b.end:])
+	if addr != nil {
+		switch address := addr.(type) {
+		case *net.UDPAddr:
+			b.Endpoint = &net.Destination{
+				Network: net.Network_UDP,
+				Address: net.IPAddress(address.IP),
+				Port:    net.Port(address.Port),
+			}
+		case *net.TCPAddr:
+			b.Endpoint = &net.Destination{
+				Network: net.Network_TCP,
+				Address: net.IPAddress(address.IP),
+				Port:    net.Port(address.Port),
+			}
+		case *net.UnixAddr:
+			b.Endpoint = &net.Destination{
+				Network: net.Network_UNIX,
+				Address: net.DomainAddress(address.Name),
+			}
+		case *net.IPAddr:
+			b.Endpoint = &net.Destination{
+				Network: net.Network_UDP,
+				Address: net.IPAddress(address.IP),
+			}
+		}
+	}
 	b.end += int32(n)
 	return int64(n), err
 }
