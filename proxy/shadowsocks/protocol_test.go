@@ -1,6 +1,7 @@
 package shadowsocks_test
 
 import (
+	"crypto/rand"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -42,10 +43,10 @@ func TestUDPEncoding(t *testing.T) {
 
 	data := buf.New()
 	common.Must2(data.WriteString("test string"))
-	encodedData, err := EncodeUDPPacket(request, data.Bytes())
+	encodedData, err := EncodeUDPPacket(request, data.Bytes(), nil)
 	common.Must(err)
 
-	decodedRequest, decodedData, err := DecodeUDPPacket(request.User, encodedData)
+	decodedRequest, decodedData, err := DecodeUDPPacket(request.User, encodedData, nil)
 	common.Must(err)
 
 	if r := cmp.Diff(decodedData.Bytes(), data.Bytes()); r != "" {
@@ -119,12 +120,23 @@ func TestTCPRequest(t *testing.T) {
 		cache := buf.New()
 		defer cache.Release()
 
-		writer, err := WriteTCPRequest(request, cache)
+		var iv []byte
+		var err error
+		account := request.User.Account.(*MemoryAccount)
+		if account.Cipher.IVSize() > 0 {
+			iv = make([]byte, account.Cipher.IVSize())
+			common.Must2(rand.Read(iv))
+			if ivError := account.CheckIV(iv); ivError != nil {
+				err = errors.New("failed to mark outgoing iv").Base(ivError)
+			}
+		}
+
+		writer, err := WriteTCPRequest(request, cache, iv, nil)
 		common.Must(err)
 
 		common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{data}))
 
-		decodedRequest, reader, err := ReadTCPSession(request.User, cache)
+		decodedRequest, reader, err := ReadTCPSession(request.User, cache, nil)
 		common.Must(err)
 		if equalRequestHeader(decodedRequest, request) == false {
 			t.Error("different request")
