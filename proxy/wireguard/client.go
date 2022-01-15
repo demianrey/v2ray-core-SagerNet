@@ -13,8 +13,10 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"net/netip"
 
 	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/app/proxyman"
 	"github.com/v2fly/v2ray-core/v5/common"
 	"github.com/v2fly/v2ray-core/v5/common/buf"
 	"github.com/v2fly/v2ray-core/v5/common/net"
@@ -110,12 +112,27 @@ func (c *Client) Init(config *Config, policyManager policy.Manager) error {
 		c.endpoint.IP = c.destination.Address.IP()
 	}
 
-	localAddress := make([]net.IP, len(config.LocalAddress))
+	localAddress := make([]tcpip.AddressWithPrefix, len(config.LocalAddress))
 	if len(localAddress) == 0 {
 		return newError("empty local address")
 	}
 	for index, address := range config.LocalAddress {
-		localAddress[index] = net.ParseIP(address)
+		if strings.Contains(address, "/") {
+			prefix, err := netip.ParsePrefix(address)
+			if err != nil {
+				return newError("failed to parse ip with prefix: ", address).Base(err)
+			}
+			localAddress[index] = tcpip.AddressWithPrefix{
+				Address:   tcpip.Address(prefix.Addr().AsSlice()),
+				PrefixLen: prefix.Bits(),
+			}
+		} else {
+			addr, err := netip.ParseAddr(address)
+			if err != nil {
+				return newError("failed to parse ip address: ", address).Base(err)
+			}
+			localAddress[index] = tcpip.Address(addr.AsSlice()).WithPrefix()
+		}
 	}
 
 	var privateKey, peerPublicKey, preSharedKey string
@@ -154,7 +171,7 @@ func (c *Client) Init(config *Config, policyManager policy.Manager) error {
 	var has4, has6 bool
 
 	for _, address := range localAddress {
-		if address.To4() != nil {
+		if address.Address.To4() != "" {
 			has4 = true
 		} else {
 			has6 = true
@@ -330,7 +347,9 @@ func (c *Client) connect() (*remoteConnection, error) {
 		return c, nil
 	}
 
-	conn, err := c.dialer.Dial(core.ToBackgroundDetachedContext(c.ctx), c.destination)
+	ctx := core.ToBackgroundDetachedContext(c.ctx)
+	ctx = proxyman.SetPreferUseIP(ctx, true)
+	conn, err := c.dialer.Dial(ctx, c.destination)
 	if err == nil {
 		c.connection = &remoteConnection{
 			conn,
